@@ -143,7 +143,7 @@ Keep all credentials server-side. Do not prefix them with `NEXT_PUBLIC_`.
 | `POST` | `/api/threads/{threadId}/actions` | Mark a conversation read or unread |
 | `GET` | `/api/messages/{messageId}/attachments/{attachmentId}` | Download an attachment |
 | `POST` | `/api/send` | Send through Brevo and save the Gmail copy |
-| `POST` | `/api/send/archive` | Retry saving a delivered message to Gmail |
+| `POST` | `/api/send/sent-copy` | Retry saving a delivered message to Gmail |
 
 ## Production notes
 
@@ -159,6 +159,6 @@ This app has **no built-in login**. Restrict access at the reverse proxy with yo
 
 - Gmail Spam is visible in the app's Inbox, but reading it does not change Gmail's Spam label. Mail rejected before reaching Gmail cannot appear here.
 - Sending uses Brevo SMTP. Brevo accepting a message confirms submission to its relay, not final delivery to the recipient.
-- If Brevo accepts a message but Gmail cannot save the sent copy, use **Retry Gmail archival only** in the composer. Do not press Send again for that message.
-- The archival retry is held in memory for 15 minutes in the running process. A restart clears it; check Gmail and the server logs before any manual recovery.
+- If Brevo accepts a message but Gmail cannot save the sent copy, use **Retry saving sent copy** in the composer. Do not press Send again for that message.
+- The sent copy retry is held in memory for 15 minutes in the running process. A restart clears it; check Gmail and the server logs before any manual recovery.
 - The app stores no mailbox database. Message content is requested from Gmail when you open or refresh the interface.

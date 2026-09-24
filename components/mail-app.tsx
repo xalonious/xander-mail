@@ -6,7 +6,7 @@ import type { MailPage, MailThread } from "@/lib/types";
 
 type Folder = "inbox" | "sent";
 type ComposeState = { mode: "new" | "reply"; threadId?: string; messageId?: string; to: string; cc: string; bcc: string; subject: string; body: string };
-type SendState = { delivered: boolean; archivedInGmail: boolean; retryKey?: string; archiveError?: string; sendError?: string };
+type SendState = { delivered: boolean; savedInGmail: boolean; retryKey?: string; saveError?: string; sendError?: string };
 type MailAppProps = { fromAddress: string; fromName: string };
 const initialCompose: ComposeState = { mode: "new", to: "", cc: "", bcc: "", subject: "", body: "" };
 
@@ -138,7 +138,7 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
       if (!response.ok && !result.sendError) throw new Error(result.error || "Sending failed.");
       setSendState(result);
       if (result.sendError) { setError(result.sendError); return; }
-      if (result.delivered && result.archivedInGmail) {
+      if (result.delivered && result.savedInGmail) {
         setNotice("Message sent and saved to Gmail.");
         setCompose(null);
         setRefresh((value) => value + 1);
@@ -148,10 +148,10 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
     finally { setSending(false); }
   }
 
-  async function retryArchive() {
+  async function retrySentCopy() {
     if (!sendState?.retryKey) return;
     try {
-      const result = await json<SendState>(await fetch("/api/send/archive", {
+      const result = await json<SendState>(await fetch("/api/send/sent-copy", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ retryKey: sendState.retryKey }),
       }));
@@ -226,7 +226,7 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
             <label className="flex min-h-[43px] items-center gap-[13px] border-b border-[#edf0f1] focus-within:border-[#8aabd7]"><span className="w-[52px] shrink-0 text-xs text-[#7c868b]">Subject</span><input className="h-[38px] min-w-0 flex-1 border-0 bg-transparent text-xs text-[var(--ink)] outline-none placeholder:text-[#a2aaae] focus-visible:outline-none" value={compose.subject} disabled={compose.mode === "reply" || sending} onChange={(event) => setCompose({ ...compose, subject: event.target.value })} placeholder="Subject" /></label>
             <label className="block min-h-60"><span className="sr-only">Message</span><textarea className="min-h-[260px] w-full resize-y border-0 bg-transparent py-[19px] text-[13px] leading-[1.7] text-[var(--ink)] outline-none placeholder:text-[#a2aaae] focus-visible:outline-none" value={compose.body} disabled={sending || Boolean(sendState?.delivered) || Boolean(sendState?.sendError)} onChange={(event) => setCompose({ ...compose, body: event.target.value })} placeholder="Write your message…" /></label>
             <div className="flex flex-wrap items-center gap-3"><label className="inline-flex min-h-8 cursor-pointer items-center gap-[7px] rounded-md border border-[#dce2e5] px-[9px] text-[11px] font-medium text-[#516372] hover:bg-[#f7f9fa] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--blue)]"><Paperclip size={15} /> Attach files<input type="file" multiple className="sr-only" disabled={sending || Boolean(sendState?.delivered)} onChange={(event) => setFiles(Array.from(event.target.files || []))} /></label>{files.length ? <span className="break-words text-[11px] text-[#858f94]">{files.map((file) => file.name).join(", ")}</span> : null}</div>
-            {sendState?.delivered && !sendState.archivedInGmail ? <div className="mt-4 rounded-md border border-[#ebdbbc] bg-[#fff9ed] p-[13px] text-xs leading-normal text-[#785627]"><strong>Email delivered, Gmail copy missing</strong><p className="mb-[10px] mt-[5px]">{sendState.archiveError}</p><button className="inline-flex min-h-8 items-center justify-center gap-[7px] rounded-md border border-[#d9dfe2] bg-white px-3 text-[11px] font-semibold text-[#485b6b] hover:border-[#c8d1d6] hover:bg-[#f6f8f9]" onClick={() => void retryArchive()}>Retry Gmail archival only</button></div> : null}
+            {sendState?.delivered && !sendState.savedInGmail ? <div className="mt-4 rounded-md border border-[#ebdbbc] bg-[#fff9ed] p-[13px] text-xs leading-normal text-[#785627]"><strong>Email delivered, Gmail copy missing</strong><p className="mb-[10px] mt-[5px]">{sendState.saveError}</p><button className="inline-flex min-h-8 items-center justify-center gap-[7px] rounded-md border border-[#d9dfe2] bg-white px-3 text-[11px] font-semibold text-[#485b6b] hover:border-[#c8d1d6] hover:bg-[#f6f8f9]" onClick={() => void retrySentCopy()}>Retry saving sent copy</button></div> : null}
             {sendState?.sendError ? <div className="mt-4 rounded-md border border-[#ebdbbc] bg-[#fff9ed] p-[13px] text-xs leading-normal text-[#785627]">Brevo did not confirm acceptance. Check its logs before starting a new send; this composer will not resend automatically.</div> : null}
           </div>
           <div className="flex min-h-[67px] items-center justify-between gap-[10px] border-t border-[var(--line)] px-[21px] max-[520px]:px-4"><span className="text-[10px] text-[#969fa3] max-[520px]:max-w-[155px] max-[520px]:leading-[1.3]">Plain text · up to 8 MB attachments</span><button className="inline-flex min-h-[35px] items-center justify-center gap-2 whitespace-nowrap rounded-md border border-[#243b5c] bg-[#243b5c] px-[14px] text-[11px] font-semibold text-white hover:enabled:bg-[#304f79]" disabled={sending || Boolean(sendState?.delivered) || Boolean(sendState?.sendError)} onClick={() => void sendMessage()}>{sending ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}{sending ? "Sending…" : "Send message"}</button></div>
