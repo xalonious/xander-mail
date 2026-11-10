@@ -9,7 +9,7 @@ export function getPrimaryAddress(): string {
 export function getFromName(): string {
   return process.env.MAIL_FROM_NAME?.trim() || "Mail";
 }
-export const maxAttachmentBytes = 8 * 1024 * 1024;
+export { maxAttachmentBytes } from "@/lib/compose-validation";
 export const maxRequestBytes = 12 * 1024 * 1024;
 
 export function isManagedAddress(address: string): boolean {

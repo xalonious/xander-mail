@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, Inbox, LoaderCircle, Mail, Paperclip, PenLine, RefreshCw, Search, Send, X } from "lucide-react";
 import type { MailPage, MailThread } from "@/lib/types";
+import { composeFields, validateCompose, type ComposeErrors, type ComposeField } from "@/lib/compose-validation";
+import { readApiResponse } from "@/lib/api-response";
 
 type Folder = "inbox" | "sent";
 type ComposeState = { mode: "new" | "reply"; threadId?: string; messageId?: string; to: string; cc: string; bcc: string; subject: string; body: string };
@@ -29,7 +31,7 @@ function correspondent(thread: MailThread, folder: Folder, fromAddress: string):
 }
 
 async function json<T>(response: Response): Promise<T> {
-  const data = await response.json();
+  const data = await readApiResponse<T & { error?: string; sendError?: string }>(response);
   if (!response.ok) throw new Error(data.error || data.sendError || "Request failed.");
   return data as T;
 }
@@ -49,6 +51,10 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
   const [sending, setSending] = useState(false);
   const [sendState, setSendState] = useState<SendState | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [composeErrors, setComposeErrors] = useState<ComposeErrors>({});
+  const [validationAttempted, setValidationAttempted] = useState(false);
+  const [composeError, setComposeError] = useState("");
+  const composerRef = useRef<HTMLDivElement>(null);
   const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
@@ -118,14 +124,40 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
     });
     setFiles([]);
     setSendState(null);
+    resetComposeErrors();
+  }
+
+  function resetComposeErrors() {
+    setComposeErrors({});
+    setValidationAttempted(false);
+    setComposeError("");
+  }
+
+  function updateCompose(field: ComposeField, value: string) {
+    if (!compose) return;
+    const updated = { ...compose, [field]: value };
+    setCompose(updated);
+    setComposeError("");
+    if (validationAttempted) setComposeErrors(validateCompose(updated, files));
+  }
+
+  function showComposeErrors(errors: ComposeErrors) {
+    setComposeErrors(errors);
+    const firstField = Object.keys(errors)[0];
+    if (firstField) composerRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${firstField}"]:not(:disabled)`)?.focus();
   }
 
   async function sendMessage() {
-    if (!compose || sending) return;
+    if (!compose || sending || sendState?.delivered || sendState?.sendError) return;
+    setValidationAttempted(true);
+    setComposeError("");
+    const errors = validateCompose(compose, files);
+    showComposeErrors(errors);
+    if (Object.keys(errors).length) return;
     setSending(true);
     setError("");
     const form = new FormData();
-    for (const field of ["to", "cc", "bcc", "subject", "body"] as const) form.set(field, compose[field]);
+    for (const field of composeFields) form.set(field, compose[field]);
     files.forEach((file) => form.append("attachments", file));
     const headers: Record<string, string> = { "x-idempotency-key": crypto.randomUUID() };
     if (compose.mode === "reply" && compose.threadId && compose.messageId) {
@@ -134,17 +166,19 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
     }
     try {
       const response = await fetch("/api/send", { method: "POST", headers, body: form });
-      const result = await response.json() as SendState & { error?: string };
+      const result = await readApiResponse<SendState & { error?: string; fieldErrors?: ComposeErrors }>(response,
+        "The server returned an unexpected response. Your draft is still here. Check Sent or Brevo before retrying to avoid sending twice.");
+      if (!response.ok && result.fieldErrors) { showComposeErrors(result.fieldErrors); return; }
       if (!response.ok && !result.sendError) throw new Error(result.error || "Sending failed.");
       setSendState(result);
-      if (result.sendError) { setError(result.sendError); return; }
+      if (result.sendError) { setComposeError(result.sendError); return; }
       if (result.delivered && result.savedInGmail) {
         setNotice("Message sent and saved to Gmail.");
         setCompose(null);
         setRefresh((value) => value + 1);
         if (compose.threadId) void openThread(compose.threadId);
       }
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Sending failed. Check Brevo before retrying."); }
+    } catch (cause) { setComposeError(cause instanceof Error ? cause.message : "Sending failed. Check Brevo before retrying."); }
     finally { setSending(false); }
   }
 
@@ -174,7 +208,7 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
       </header>
       <div className="grid h-[calc(100dvh-64px)] min-h-[550px] grid-cols-[208px_minmax(320px,370px)_minmax(0,1fr)] max-[1050px]:grid-cols-[66px_minmax(300px,350px)_minmax(0,1fr)] max-[730px]:h-[calc(100dvh-58px)] max-[730px]:min-h-0 max-[730px]:grid-cols-[minmax(0,1fr)] max-[730px]:grid-rows-[55px_minmax(0,1fr)]">
         <aside className="flex min-w-0 flex-col border-r border-[var(--line)] bg-[#f8f9f9] px-[13px] pb-4 pt-6 max-[1050px]:items-center max-[1050px]:px-2 max-[1050px]:py-5 max-[730px]:flex-row max-[730px]:items-center max-[730px]:justify-between max-[730px]:border-b max-[730px]:border-r-0 max-[730px]:px-[15px] max-[730px]:py-0">
-          <button className="mx-[6px] mb-[30px] flex min-h-[39px] items-center justify-center gap-[9px] whitespace-nowrap rounded-md border border-[#243b5c] bg-[#243b5c] px-[13px] text-[13px] font-semibold text-white hover:bg-[#304f79] max-[1050px]:mx-0 max-[1050px]:mb-[27px] max-[1050px]:min-h-10 max-[1050px]:w-10 max-[1050px]:px-0 max-[730px]:mb-0 max-[730px]:min-h-[33px] max-[730px]:w-auto max-[730px]:px-[11px]" onClick={() => { setCompose({ ...initialCompose }); setFiles([]); setSendState(null); }}><PenLine size={17} strokeWidth={1.8} /><span className="max-[1050px]:hidden max-[730px]:inline">New message</span></button>
+          <button className="mx-[6px] mb-[30px] flex min-h-[39px] items-center justify-center gap-[9px] whitespace-nowrap rounded-md border border-[#243b5c] bg-[#243b5c] px-[13px] text-[13px] font-semibold text-white hover:bg-[#304f79] max-[1050px]:mx-0 max-[1050px]:mb-[27px] max-[1050px]:min-h-10 max-[1050px]:w-10 max-[1050px]:px-0 max-[730px]:mb-0 max-[730px]:min-h-[33px] max-[730px]:w-auto max-[730px]:px-[11px]" onClick={() => { setCompose({ ...initialCompose }); setFiles([]); setSendState(null); resetComposeErrors(); }}><PenLine size={17} strokeWidth={1.8} /><span className="max-[1050px]:hidden max-[730px]:inline">New message</span></button>
           <div className="mx-[13px] mb-[10px] text-[10px] font-bold tracking-[.1em] text-[#9aa1a4] max-[1050px]:hidden">MAIL</div>
           <nav className="flex flex-col gap-[3px] max-[1050px]:w-full max-[730px]:w-auto max-[730px]:flex-row max-[730px]:gap-1" aria-label="Mail folders">
             {navigation.map((item) => <button key={item.key} className={`flex min-h-[38px] w-full items-center gap-3 rounded-md border-0 px-[13px] text-left text-[13px] max-[1050px]:justify-center max-[1050px]:px-0 max-[730px]:min-h-[33px] max-[730px]:w-auto max-[730px]:gap-[6px] max-[730px]:px-[10px] max-[730px]:text-[11px] ${folder === item.key ? "bg-[#e8eef7] font-semibold text-[#244a7f]" : "bg-transparent font-medium text-[#596267] hover:bg-[#eff1f2]"}`} aria-current={folder === item.key ? "page" : undefined} onClick={() => { setFolder(item.key); setSelectedId(null); setThread(null); }}>
@@ -220,12 +254,24 @@ export default function MailApp({ fromAddress, fromName }: MailAppProps) {
       {compose ? <div className="fixed inset-0 z-40 flex items-end justify-end bg-[#1e273b55] p-6 max-[520px]:p-0" onClick={(event) => { if (event.target === event.currentTarget && !sending) setCompose(null); }}>
         <div className="flex h-[min(740px,calc(100dvh-48px))] w-[min(600px,100%)] flex-col overflow-hidden rounded-[7px] border border-[#cdd4d8] bg-white shadow-[0_20px_60px_#10182038] max-[520px]:h-dvh max-[520px]:w-full max-[520px]:rounded-none max-[520px]:border-0" role="dialog" aria-modal="true" aria-label={compose.mode === "reply" ? "Reply" : "New message"}>
           <div className="flex min-h-[68px] items-center justify-between border-b border-[var(--line)] px-[21px] max-[520px]:px-4"><div className="flex flex-col gap-[3px]"><strong className="text-sm font-semibold">{compose.mode === "reply" ? "Reply" : "New message"}</strong><span className="text-[11px] text-[#899297]">From {fromName} &lt;{fromAddress}&gt;</span></div><button className="inline-grid size-[34px] shrink-0 place-items-center rounded-md border-0 bg-transparent text-[#687277] hover:bg-[#f0f2f3] hover:text-[#263d5d]" aria-label="Close composer" disabled={sending} onClick={() => setCompose(null)}><X size={18} /></button></div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-[21px] pb-5 pt-[5px] max-[520px]:px-4">
-            <label className="flex min-h-[43px] items-center gap-[13px] border-b border-[#edf0f1] focus-within:border-[#8aabd7]"><span className="w-[52px] shrink-0 text-xs text-[#7c868b]">To</span><input className="h-[38px] min-w-0 flex-1 border-0 bg-transparent text-xs text-[var(--ink)] outline-none placeholder:text-[#a2aaae] focus-visible:outline-none" value={compose.to} disabled={compose.mode === "reply" || sending} onChange={(event) => setCompose({ ...compose, to: event.target.value })} placeholder="name@example.com, another@example.com" /></label>
-            {compose.mode === "new" ? <><label className="flex min-h-[43px] items-center gap-[13px] border-b border-[#edf0f1] focus-within:border-[#8aabd7]"><span className="w-[52px] shrink-0 text-xs text-[#7c868b]">Cc</span><input className="h-[38px] min-w-0 flex-1 border-0 bg-transparent text-xs text-[var(--ink)] outline-none focus-visible:outline-none" value={compose.cc} disabled={sending} onChange={(event) => setCompose({ ...compose, cc: event.target.value })} /></label><label className="flex min-h-[43px] items-center gap-[13px] border-b border-[#edf0f1] focus-within:border-[#8aabd7]"><span className="w-[52px] shrink-0 text-xs text-[#7c868b]">Bcc</span><input className="h-[38px] min-w-0 flex-1 border-0 bg-transparent text-xs text-[var(--ink)] outline-none focus-visible:outline-none" value={compose.bcc} disabled={sending} onChange={(event) => setCompose({ ...compose, bcc: event.target.value })} /></label></> : null}
-            <label className="flex min-h-[43px] items-center gap-[13px] border-b border-[#edf0f1] focus-within:border-[#8aabd7]"><span className="w-[52px] shrink-0 text-xs text-[#7c868b]">Subject</span><input className="h-[38px] min-w-0 flex-1 border-0 bg-transparent text-xs text-[var(--ink)] outline-none placeholder:text-[#a2aaae] focus-visible:outline-none" value={compose.subject} disabled={compose.mode === "reply" || sending} onChange={(event) => setCompose({ ...compose, subject: event.target.value })} placeholder="Subject" /></label>
-            <label className="block min-h-60"><span className="sr-only">Message</span><textarea className="min-h-[260px] w-full resize-y border-0 bg-transparent py-[19px] text-[13px] leading-[1.7] text-[var(--ink)] outline-none placeholder:text-[#a2aaae] focus-visible:outline-none" value={compose.body} disabled={sending || Boolean(sendState?.delivered) || Boolean(sendState?.sendError)} onChange={(event) => setCompose({ ...compose, body: event.target.value })} placeholder="Write your message…" /></label>
-            <div className="flex flex-wrap items-center gap-3"><label className="inline-flex min-h-8 cursor-pointer items-center gap-[7px] rounded-md border border-[#dce2e5] px-[9px] text-[11px] font-medium text-[#516372] hover:bg-[#f7f9fa] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--blue)]"><Paperclip size={15} /> Attach files<input type="file" multiple className="sr-only" disabled={sending || Boolean(sendState?.delivered)} onChange={(event) => setFiles(Array.from(event.target.files || []))} /></label>{files.length ? <span className="break-words text-[11px] text-[#858f94]">{files.map((file) => file.name).join(", ")}</span> : null}</div>
+          <div ref={composerRef} className="min-h-0 flex-1 overflow-y-auto px-[21px] pb-5 pt-[5px] max-[520px]:px-4">
+            {composeError || Object.keys(composeErrors).length ? <div role="alert" className="my-3 rounded-md border border-[#e5c5c1] bg-[#fff5f3] p-3 text-xs text-[#884139]">{composeError || "Please check the highlighted fields before sending."}</div> : null}
+            {(["to", "cc", "bcc", "subject"] as const).filter((field) => compose.mode === "new" || field === "to" || field === "subject").map((field) => <div key={field}>
+              <label className={`flex min-h-[43px] items-center gap-[13px] border-b ${composeErrors[field] ? "border-[#b44f43]" : "border-[#edf0f1] focus-within:border-[#8aabd7]"}`}>
+                <span className="w-[52px] shrink-0 text-xs text-[#7c868b]">{field === "subject" ? "Subject" : field === "to" ? "To" : field === "cc" ? "Cc" : "Bcc"}</span>
+                <input name={field} className="h-[38px] min-w-0 flex-1 border-0 bg-transparent text-xs text-[var(--ink)] outline-none placeholder:text-[#a2aaae] focus-visible:outline-none" value={compose[field]} disabled={compose.mode === "reply" || sending} aria-invalid={Boolean(composeErrors[field])} aria-describedby={composeErrors[field] ? `compose-${field}-error` : undefined} aria-required={field === "to" || field === "subject"} onChange={(event) => updateCompose(field, event.target.value)} placeholder={field === "to" ? "name@example.com, another@example.com" : field === "subject" ? "Subject" : undefined} />
+              </label>
+              {composeErrors[field] ? <p id={`compose-${field}-error`} className="mt-1 mb-2 text-xs text-[#a13e33]">{composeErrors[field]}</p> : null}
+            </div>)}
+            <label className={`block min-h-60 ${composeErrors.body ? "border-b border-[#b44f43]" : ""}`}><span className="sr-only">Message</span><textarea name="body" className="min-h-[260px] w-full resize-y border-0 bg-transparent py-[19px] text-[13px] leading-[1.7] text-[var(--ink)] outline-none placeholder:text-[#a2aaae] focus-visible:outline-none" value={compose.body} disabled={sending || Boolean(sendState?.delivered) || Boolean(sendState?.sendError)} aria-required="true" aria-invalid={Boolean(composeErrors.body)} aria-describedby={composeErrors.body ? "compose-body-error" : undefined} onChange={(event) => updateCompose("body", event.target.value)} placeholder="Write your message…" /></label>
+            {composeErrors.body ? <p id="compose-body-error" className="mb-3 text-xs text-[#a13e33]">{composeErrors.body}</p> : null}
+            <div className="flex flex-wrap items-center gap-3"><label className="inline-flex min-h-8 cursor-pointer items-center gap-[7px] rounded-md border border-[#dce2e5] px-[9px] text-[11px] font-medium text-[#516372] hover:bg-[#f7f9fa] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--blue)]"><Paperclip size={15} /> Attach files<input name="attachments" type="file" multiple className="sr-only" disabled={sending || Boolean(sendState?.delivered)} aria-invalid={Boolean(composeErrors.attachments)} aria-describedby={composeErrors.attachments ? "compose-attachments-error" : undefined} onChange={(event) => {
+              const selected = Array.from(event.target.files || []).filter((file) => file.size > 0);
+              setFiles(selected);
+              setComposeError("");
+              if (validationAttempted) setComposeErrors(validateCompose(compose, selected));
+            }} /></label>{files.length ? <span className="break-words text-[11px] text-[#858f94]">{files.map((file) => file.name).join(", ")}</span> : null}</div>
+            {composeErrors.attachments ? <p id="compose-attachments-error" className="mt-2 text-xs text-[#a13e33]">{composeErrors.attachments}</p> : null}
             {sendState?.delivered && !sendState.savedInGmail ? <div className="mt-4 rounded-md border border-[#ebdbbc] bg-[#fff9ed] p-[13px] text-xs leading-normal text-[#785627]"><strong>Email delivered, Gmail copy missing</strong><p className="mb-[10px] mt-[5px]">{sendState.saveError}</p><button className="inline-flex min-h-8 items-center justify-center gap-[7px] rounded-md border border-[#d9dfe2] bg-white px-3 text-[11px] font-semibold text-[#485b6b] hover:border-[#c8d1d6] hover:bg-[#f6f8f9]" onClick={() => void retrySentCopy()}>Retry saving sent copy</button></div> : null}
             {sendState?.sendError ? <div className="mt-4 rounded-md border border-[#ebdbbc] bg-[#fff9ed] p-[13px] text-xs leading-normal text-[#785627]">Brevo did not confirm acceptance. Check its logs before starting a new send; this composer will not resend automatically.</div> : null}
           </div>

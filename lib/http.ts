@@ -1,5 +1,6 @@
 import { maxRequestBytes } from "@/lib/config";
 import { ZodError } from "zod";
+import type { ComposeErrors } from "@/lib/compose-validation";
 
 export function requireSameOrigin(request: Request): void {
   const origin = request.headers.get("origin");
@@ -40,20 +41,27 @@ export async function readLimitedFormData(request: Request): Promise<FormData> {
     headers: { "Content-Type": request.headers.get("content-type") || "" },
     body: new Blob([combined.buffer as ArrayBuffer]),
   });
-  return rebuilt.formData();
+  try { return await rebuilt.formData(); }
+  catch { throw new HttpError(400, "Could not read the message. Please try sending it again."); }
 }
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public fieldErrors?: ComposeErrors) { super(message); }
 }
 
 export function errorResponse(error: unknown, operation: string): Response {
   const status = error instanceof HttpError ? error.status : error instanceof ZodError ? 400 : 502;
   const message = error instanceof Error ? error.message : "Request failed.";
   console.error(JSON.stringify({ operation, timestamp: new Date().toISOString(), category: error instanceof Error ? error.constructor.name : "unknown" }));
-  const safe = status === 403 || status === 413 || status === 429 ||
+  if (error instanceof ZodError) {
+    return Response.json({ error: "Some request details are invalid. Please check your input and try again." }, { status });
+  }
+  const safe = error instanceof HttpError ||
     /outside the managed|not found|not configured|Add at least|Too many|Invalid|exceed|expired|no valid Message-ID|Google authorization|Could not load Gmail/.test(message);
-  return Response.json({ error: safe ? message : "Request failed. Check server logs." }, { status });
+  return Response.json({
+    error: safe ? message : "Request failed. Check server logs.",
+    ...(error instanceof HttpError && error.fieldErrors ? { fieldErrors: error.fieldErrors } : {}),
+  }, { status });
 }
 
 const hits: number[] = [];
